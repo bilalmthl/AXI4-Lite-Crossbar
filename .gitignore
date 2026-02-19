@@ -15,3 +15,4 @@ build_output/
 *.sim
 *.ip_user_files
 .Xil/
+/dfx_runtime.txt

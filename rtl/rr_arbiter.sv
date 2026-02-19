@@ -6,6 +6,7 @@ module rr_arbiter #(
     input  logic [N_REQ-1:0] req_i,   
     input  logic             ack_i,   // Acknowledgment that the granted Master is done
     output logic [N_REQ-1:0] grant_o  
+);
 
     logic [N_REQ-1:0] mask_q;
     logic [N_REQ-1:0] masked_req;
