@@ -3,9 +3,9 @@
 *.log
 *.str
 
-# Ignore the build output directory 
+# Ignore the build output and sim project 
 build_output/
-tb/
+sim_project/
 
 # Ignore any Vivado GUI project files
 *.xpr
