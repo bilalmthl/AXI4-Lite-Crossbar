@@ -1,10 +1,11 @@
-set_property PACKAGE_PIN W5 [get_ports aclk]
-set_property IOSTANDARD LVCMOS33 [get_ports aclk]
+## Clock signal
 create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports aclk]
 
-set_property PACKAGE_PIN U18 [get_ports aresetn]
-set_property IOSTANDARD LVCMOS33 [get_ports aresetn]
-
+## Pblock Definition
 create_pblock pblock_congestion
-resize_pblock [get_pblocks pblock_congestion] -add {SLICE_X10Y10:SLICE_X21Y21}
+resize_pblock [get_pblocks pblock_congestion] -add {SLICE_X10Y10:SLICE_X30Y30}
 add_cells_to_pblock [get_pblocks pblock_congestion] [get_cells *]
+
+## Configuration bits
+set_property CFGBVS VCCO [current_design]
+set_property CONFIG_VOLTAGE 3.3 [current_design]
