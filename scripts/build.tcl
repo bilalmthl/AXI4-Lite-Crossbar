@@ -5,6 +5,8 @@ file mkdir $outputDir
 
 puts "Reading Design Files..."
 read_verilog -sv rtl/axi_lite_if.sv
+read_verilog -sv rtl/rr_arbiter.sv
+read_verilog -sv rtl/axi_decoder.sv
 read_verilog -sv rtl/axi_crossbar.sv
 
 read_xdc constraints/basys3.xdc

@@ -11,150 +11,209 @@ module axi_crossbar #(
     axi_lite_if.master m_peri_if [M_SLAVES] 
 );
 
-    // Decoder wires and instantiation
-    logic [M_SLAVES-1:0] master_match [N_MASTERS];
-    logic [N_MASTERS-1:0] decerr;
+    // Write path decoders
+    logic [M_SLAVES-1:0] aw_master_match [N_MASTERS];
+    logic [N_MASTERS-1:0] aw_decerr;
+
+    // Read path decoders
+    logic [M_SLAVES-1:0] ar_master_match [N_MASTERS];
+    logic [N_MASTERS-1:0] ar_decerr;
 
     generate
         for (genvar i = 0; i < N_MASTERS; i++) begin : gen_decoders
             axi_decoder #(
                 .M_SLAVES(M_SLAVES)
-            ) u_dec (
+            ) u_aw_dec (
                 .addr_i  (s_cpu_if[i].awaddr),
                 .valid_i (s_cpu_if[i].awvalid),
-                .match_o (master_match[i]),
-                .decerr_o(decerr[i])
+                .match_o (aw_master_match[i]),
+                .decerr_o(aw_decerr[i])
+            );
+
+            axi_decoder #(
+                .M_SLAVES(M_SLAVES)
+            ) u_ar_dec (
+                .addr_i  (s_cpu_if[i].araddr),
+                .valid_i (s_cpu_if[i].arvalid),
+                .match_o (ar_master_match[i]),
+                .decerr_o(ar_decerr[i])
             );
         end
     endgenerate
 
-    // Routing matrix
-    logic [N_MASTERS-1:0] slave_req [M_SLAVES];
-    logic [N_MASTERS-1:0] slave_grant [M_SLAVES];
-    logic                 slave_ack [M_SLAVES];
+    // Routing matrices
+    logic [N_MASTERS-1:0] w_slave_req [M_SLAVES];
+    logic [N_MASTERS-1:0] w_slave_grant [M_SLAVES];
+    logic                 w_slave_ack [M_SLAVES];
+
+    logic [N_MASTERS-1:0] r_slave_req [M_SLAVES];
+    logic [N_MASTERS-1:0] r_slave_grant [M_SLAVES];
+    logic                 r_slave_ack [M_SLAVES];
 
     always_comb begin
         for (int j = 0; j < M_SLAVES; j++) begin
             for (int i = 0; i < N_MASTERS; i++) begin
-                slave_req[j][i] = master_match[i][j];
+                w_slave_req[j][i] = aw_master_match[i][j];
+                r_slave_req[j][i] = ar_master_match[i][j];
             end
         end
     end
 
-    // Arbiter and handshake FSM per slave
     typedef enum logic [1:0] {W_IDLE, W_ADDR_DATA, W_RESP} w_state_t;
+    typedef enum logic [1:0] {R_IDLE, R_ADDR, R_DATA} r_state_t;
 
     generate
         for (genvar j = 0; j < M_SLAVES; j++) begin : gen_slave_logic
             
-            rr_arbiter #(
-                .N_REQ(N_MASTERS)
-            ) u_arbiter (
+            // Write arbiter
+            rr_arbiter #(.N_REQ(N_MASTERS)) u_w_arbiter (
                 .clk    (aclk),
                 .rst_n  (aresetn),
-                .req_i  (slave_req[j]),
-                .ack_i  (slave_ack[j]),
-                .grant_o(slave_grant[j])
+                .req_i  (w_slave_req[j]),
+                .ack_i  (w_slave_ack[j]),
+                .grant_o(w_slave_grant[j])
             );
 
-            // FSM
-            w_state_t state_q, state_d;
+            // Read arbiter
+            rr_arbiter #(.N_REQ(N_MASTERS)) u_r_arbiter (
+                .clk    (aclk),
+                .rst_n  (aresetn),
+                .req_i  (r_slave_req[j]),
+                .ack_i  (r_slave_ack[j]),
+                .grant_o(r_slave_grant[j])
+            );
+
+            // Write FSM
+            w_state_t w_state_q, w_state_d;
             logic aw_done_q, aw_done_d;
             logic w_done_q,  w_done_d;
             
+            // Read FSM
+            r_state_t r_state_q, r_state_d;
+
             always_ff @(posedge aclk or negedge aresetn) begin
                 if (!aresetn) begin
-                    state_q   <= W_IDLE;
+                    w_state_q <= W_IDLE;
                     aw_done_q <= 1'b0;
                     w_done_q  <= 1'b0;
+                    
+                    r_state_q <= R_IDLE;
                 end else begin
-                    state_q   <= state_d;
+                    w_state_q <= w_state_d;
                     aw_done_q <= aw_done_d;
                     w_done_q  <= w_done_d;
+                    
+                    r_state_q <= r_state_d;
                 end
             end
 
+            // Write FSM logic
             always_comb begin
-                state_d   = state_q;
-                aw_done_d = aw_done_q;
-                w_done_d  = w_done_q;
-                slave_ack[j] = 1'b0;
+                w_state_d   = w_state_q;
+                aw_done_d   = aw_done_q;
+                w_done_d    = w_done_q;
+                w_slave_ack[j] = 1'b0;
 
-                case (state_q)
+                case (w_state_q)
                     W_IDLE: begin
                         aw_done_d = 1'b0;
                         w_done_d  = 1'b0;
-                        if (|slave_grant[j]) begin
-                            state_d = W_ADDR_DATA;
-                        end
+                        if (|w_slave_grant[j]) w_state_d = W_ADDR_DATA;
                     end
-
                     W_ADDR_DATA: begin
-                        // Track independent AW and W handshakes
                         if (m_peri_if[j].awvalid && m_peri_if[j].awready) aw_done_d = 1'b1;
                         if (m_peri_if[j].wvalid  && m_peri_if[j].wready)  w_done_d  = 1'b1;
 
                         if ((aw_done_q || (m_peri_if[j].awvalid && m_peri_if[j].awready)) && 
                             (w_done_q  || (m_peri_if[j].wvalid  && m_peri_if[j].wready))) begin
-                            state_d = W_RESP;
+                            w_state_d = W_RESP;
                         end
                     end
-
                     W_RESP: begin
                         if (m_peri_if[j].bvalid && m_peri_if[j].bready) begin
-                            slave_ack[j] = 1'b1;
-                            state_d = W_IDLE;
+                            w_slave_ack[j] = 1'b1;
+                            w_state_d = W_IDLE;
                         end
                     end
-                    
-                    default: state_d = W_IDLE;
+                    default: w_state_d = W_IDLE;
                 endcase
             end
 
-            // Datapath multiplexing
+            // Read FSM logic
             always_comb begin
-                if (slave_grant[j][1]) begin
+                r_state_d = r_state_q;
+                r_slave_ack[j] = 1'b0;
+
+                case (r_state_q)
+                    R_IDLE: begin
+                        if (|r_slave_grant[j]) r_state_d = R_ADDR;
+                    end
+                    R_ADDR: begin
+                        if (m_peri_if[j].arvalid && m_peri_if[j].arready) r_state_d = R_DATA;
+                    end
+                    R_DATA: begin
+                        if (m_peri_if[j].rvalid && m_peri_if[j].rready) begin
+                            r_slave_ack[j] = 1'b1;
+                            r_state_d = R_IDLE;
+                        end
+                    end
+                    default: r_state_d = R_IDLE;
+                endcase
+            end
+
+            // Write datapath multiplexing
+            always_comb begin
+                if (w_slave_grant[j][1]) begin
                     m_peri_if[j].awaddr  = s_cpu_if[1].awaddr;
-                    m_peri_if[j].awvalid = s_cpu_if[1].awvalid && (state_q == W_ADDR_DATA) && !aw_done_q;
+                    m_peri_if[j].awvalid = s_cpu_if[1].awvalid && (w_state_q == W_ADDR_DATA) && !aw_done_q;
                     m_peri_if[j].wdata   = s_cpu_if[1].wdata;
-                    m_peri_if[j].wvalid  = s_cpu_if[1].wvalid && (state_q == W_ADDR_DATA) && !w_done_q;
-                    m_peri_if[j].bready  = s_cpu_if[1].bready && (state_q == W_RESP);
+                    m_peri_if[j].wvalid  = s_cpu_if[1].wvalid && (w_state_q == W_ADDR_DATA) && !w_done_q;
+                    m_peri_if[j].bready  = s_cpu_if[1].bready && (w_state_q == W_RESP);
                     
-                    s_cpu_if[1].awready  = m_peri_if[j].awready && (state_q == W_ADDR_DATA) && !aw_done_q;
-                    s_cpu_if[1].wready   = m_peri_if[j].wready  && (state_q == W_ADDR_DATA) && !w_done_q;
-                    s_cpu_if[1].bvalid   = m_peri_if[j].bvalid  && (state_q == W_RESP);
+                    s_cpu_if[1].awready  = m_peri_if[j].awready && (w_state_q == W_ADDR_DATA) && !aw_done_q;
+                    s_cpu_if[1].wready   = m_peri_if[j].wready  && (w_state_q == W_ADDR_DATA) && !w_done_q;
+                    s_cpu_if[1].bvalid   = m_peri_if[j].bvalid  && (w_state_q == W_RESP);
                     s_cpu_if[1].bresp    = m_peri_if[j].bresp;
                 end else begin
                     m_peri_if[j].awaddr  = s_cpu_if[0].awaddr;
-                    m_peri_if[j].awvalid = s_cpu_if[0].awvalid && (state_q == W_ADDR_DATA) && !aw_done_q;
+                    m_peri_if[j].awvalid = s_cpu_if[0].awvalid && (w_state_q == W_ADDR_DATA) && !aw_done_q;
                     m_peri_if[j].wdata   = s_cpu_if[0].wdata;
-                    m_peri_if[j].wvalid  = s_cpu_if[0].wvalid && (state_q == W_ADDR_DATA) && !w_done_q;
-                    m_peri_if[j].bready  = s_cpu_if[0].bready && (state_q == W_RESP);
+                    m_peri_if[j].wvalid  = s_cpu_if[0].wvalid && (w_state_q == W_ADDR_DATA) && !w_done_q;
+                    m_peri_if[j].bready  = s_cpu_if[0].bready && (w_state_q == W_RESP);
                     
-                    s_cpu_if[0].awready  = m_peri_if[j].awready && (state_q == W_ADDR_DATA) && !aw_done_q;
-                    s_cpu_if[0].wready   = m_peri_if[j].wready  && (state_q == W_ADDR_DATA) && !w_done_q;
-                    s_cpu_if[0].bvalid   = m_peri_if[j].bvalid  && (state_q == W_RESP);
+                    s_cpu_if[0].awready  = m_peri_if[j].awready && (w_state_q == W_ADDR_DATA) && !aw_done_q;
+                    s_cpu_if[0].wready   = m_peri_if[j].wready  && (w_state_q == W_ADDR_DATA) && !w_done_q;
+                    s_cpu_if[0].bvalid   = m_peri_if[j].bvalid  && (w_state_q == W_RESP);
                     s_cpu_if[0].bresp    = m_peri_if[j].bresp;
                 end
             end
-            
-            // Temporarily tie off read channels
-            assign m_peri_if[j].araddr  = '0;
-            assign m_peri_if[j].arvalid = 1'b0;
-            assign m_peri_if[j].arprot  = '0;
-            assign m_peri_if[j].rready  = 1'b0;
-            assign m_peri_if[j].awprot  = '0;
-            assign m_peri_if[j].wstrb   = '0;
-        end
-    endgenerate
 
-    // Temporarily tie off master read channels
-    generate
-        for (genvar i = 0; i < N_MASTERS; i++) begin : gen_master_read_tie
-            assign s_cpu_if[i].arready = 1'b0;
-            assign s_cpu_if[i].rvalid  = 1'b0;
-            assign s_cpu_if[i].rdata   = '0;
-            assign s_cpu_if[i].rresp   = 2'b00;
+            // Read datapath multiplexing
+            always_comb begin
+                if (r_slave_grant[j][1]) begin
+                    m_peri_if[j].araddr  = s_cpu_if[1].araddr;
+                    m_peri_if[j].arvalid = s_cpu_if[1].arvalid && (r_state_q == R_ADDR);
+                    m_peri_if[j].rready  = s_cpu_if[1].rready  && (r_state_q == R_DATA);
+                    
+                    s_cpu_if[1].arready  = m_peri_if[j].arready && (r_state_q == R_ADDR);
+                    s_cpu_if[1].rvalid   = m_peri_if[j].rvalid  && (r_state_q == R_DATA);
+                    s_cpu_if[1].rdata    = m_peri_if[j].rdata;
+                    s_cpu_if[1].rresp    = m_peri_if[j].rresp;
+                end else begin
+                    m_peri_if[j].araddr  = s_cpu_if[0].araddr;
+                    m_peri_if[j].arvalid = s_cpu_if[0].arvalid && (r_state_q == R_ADDR);
+                    m_peri_if[j].rready  = s_cpu_if[0].rready  && (r_state_q == R_DATA);
+                    
+                    s_cpu_if[0].arready  = m_peri_if[j].arready && (r_state_q == R_ADDR);
+                    s_cpu_if[0].rvalid   = m_peri_if[j].rvalid  && (r_state_q == R_DATA);
+                    s_cpu_if[0].rdata    = m_peri_if[j].rdata;
+                    s_cpu_if[0].rresp    = m_peri_if[j].rresp;
+                end
+            end
+            
+            assign m_peri_if[j].awprot = '0;
+            assign m_peri_if[j].wstrb  = '0;
+            assign m_peri_if[j].arprot = '0;
         end
     endgenerate
 
