@@ -5,6 +5,7 @@
 
 # Ignore the build output directory 
 build_output/
+tb/
 
 # Ignore any Vivado GUI project files
 *.xpr
