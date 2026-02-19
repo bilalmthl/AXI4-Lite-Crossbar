@@ -1,0 +1,17 @@
+# Ignore Vivado log and journal files
+*.jou
+*.log
+*.str
+
+# Ignore the build output directory 
+build_output/
+
+# Ignore any Vivado GUI project files
+*.xpr
+*.hw
+*.sim
+*.cache
+*.runs
+*.sim
+*.ip_user_files
+.Xil/
