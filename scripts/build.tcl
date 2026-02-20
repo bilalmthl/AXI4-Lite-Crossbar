@@ -7,6 +7,7 @@ read_verilog -sv rtl/axi_lite_if.sv
 read_verilog -sv rtl/rr_arbiter.sv
 read_verilog -sv rtl/axi_decoder.sv
 read_verilog -sv rtl/axi_crossbar.sv
+read_verilog -sv rtl/axi_skid_buffer.sv
 read_xdc constraints/basys3.xdc
 
 # Run synthesis in OOC mode to bypass IO pin limits
