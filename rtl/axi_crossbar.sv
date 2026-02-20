@@ -225,4 +225,39 @@ module axi_crossbar #(
             end
         end
     endgenerate
+
+    // SVA
+    `ifndef SYNTHESIS
+    generate
+        for (genvar i = 0; i < N_MASTERS; i++) begin : gen_master_sva
+            // Master AWVALID must not drop until AWREADY is received
+            assert property (@(posedge aclk) disable iff (!aresetn)
+                (s_cpu_if[i].awvalid && !s_cpu_if[i].awready) |=> s_cpu_if[i].awvalid)
+                else $fatal(1, "AXI VIOLATION: Master %0d AWVALID dropped before AWREADY!", i);
+
+            // Master WVALID must not drop until WREADY is received
+            assert property (@(posedge aclk) disable iff (!aresetn)
+                (s_cpu_if[i].wvalid && !s_cpu_if[i].wready) |=> s_cpu_if[i].wvalid)
+                else $fatal(1, "AXI VIOLATION: Master %0d WVALID dropped before WREADY!", i);
+
+            // Master ARVALID must not drop until ARREADY is received
+            assert property (@(posedge aclk) disable iff (!aresetn)
+                (s_cpu_if[i].arvalid && !s_cpu_if[i].arready) |=> s_cpu_if[i].arvalid)
+                else $fatal(1, "AXI VIOLATION: Master %0d ARVALID dropped before ARREADY!", i);
+        end
+
+        for (genvar j = 0; j < M_SLAVES; j++) begin : gen_slave_sva
+            // Slave BVALID must not drop until BREADY is received
+            assert property (@(posedge aclk) disable iff (!aresetn)
+                (m_peri_if[j].bvalid && !m_peri_if[j].bready) |=> m_peri_if[j].bvalid)
+                else $fatal(1, "AXI VIOLATION: Slave %0d BVALID dropped before BREADY!", j);
+
+            // Slave RVALID must not drop until RREADY is received
+            assert property (@(posedge aclk) disable iff (!aresetn)
+                (m_peri_if[j].rvalid && !m_peri_if[j].rready) |=> m_peri_if[j].rvalid)
+                else $fatal(1, "AXI VIOLATION: Slave %0d RVALID dropped before RREADY!", j);
+        end
+    endgenerate
+    `endif
+
 endmodule
