@@ -17,4 +17,3 @@ sim_project/
 *.ip_user_files
 .Xil/
 /dfx_runtime.txt
-/clockInfo.txt
