@@ -11,9 +11,11 @@ module axi_crossbar #(
     axi_lite_if.master m_peri_if [M_SLAVES] 
 );
 
+    // Internal interfaces after the master skid buffers and before the slave skid buffers
     axi_lite_if s_core_if [N_MASTERS] (aclk, aresetn);
     axi_lite_if m_core_if [M_SLAVES] (aclk, aresetn);
 
+    // Instantiate skid Buffers on all master inputs to break combinational READY/VALID backpressure paths
     generate
         for (genvar i = 0; i < N_MASTERS; i++) begin : gen_master_skids
             axi_skid_buffer #(.DATA_WIDTH(32)) u_skid_aw (
@@ -32,6 +34,7 @@ module axi_crossbar #(
                 .m_data_o(s_core_if[i].araddr), .m_valid_o(s_core_if[i].arvalid), .m_ready_i(s_core_if[i].arready)
             );
             
+            // Bypass skid buffers for response channels (master handles response directly)
             assign s_cpu_if[i].bvalid = s_core_if[i].bvalid;
             assign s_cpu_if[i].bresp  = s_core_if[i].bresp;
             assign s_core_if[i].bready = s_cpu_if[i].bready;
@@ -42,6 +45,7 @@ module axi_crossbar #(
         end
     endgenerate
 
+    // Instantiate skid buffers on all slave outputs to further isolate timing paths
     generate
         for (genvar j = 0; j < M_SLAVES; j++) begin : gen_slave_skids
             axi_skid_buffer #(.DATA_WIDTH(2)) u_skid_b (
@@ -55,6 +59,7 @@ module axi_crossbar #(
                 .m_data_o({m_core_if[j].rresp, m_core_if[j].rdata}), .m_valid_o(m_core_if[j].rvalid), .m_ready_i(m_core_if[j].rready)
             );
 
+            // Bypass skid buffers for request channels (mlave receives requests directly from core)
             assign m_peri_if[j].awaddr = m_core_if[j].awaddr;
             assign m_peri_if[j].awvalid = m_core_if[j].awvalid;
             assign m_core_if[j].awready = m_peri_if[j].awready;
@@ -65,17 +70,20 @@ module axi_crossbar #(
             assign m_peri_if[j].arvalid = m_core_if[j].arvalid;
             assign m_core_if[j].arready = m_peri_if[j].arready;
             
+            // Hardcode unused AXI4-Lite protection and strobe signals
             assign m_peri_if[j].awprot = '0;
             assign m_peri_if[j].arprot = '0;
             assign m_peri_if[j].wstrb  = 4'hF;
         end
     endgenerate
 
+    // Address Decoding Signals
     logic [M_SLAVES-1:0] aw_master_match [N_MASTERS];
     logic [N_MASTERS-1:0] aw_decerr;
     logic [M_SLAVES-1:0] ar_master_match [N_MASTERS];
     logic [N_MASTERS-1:0] ar_decerr;
 
+    // Instantiate Address Decoders for each Master's Read and Write channels
     generate
         for (genvar i = 0; i < N_MASTERS; i++) begin : gen_decoders
             axi_decoder #(.M_SLAVES(M_SLAVES)) u_aw_dec (
@@ -87,6 +95,7 @@ module axi_crossbar #(
         end
     endgenerate
 
+    // Crossbar arbitration signals
     logic [N_MASTERS-1:0] w_req [M_SLAVES];
     logic [N_MASTERS-1:0] w_grant [M_SLAVES];
     logic                 w_ack [M_SLAVES];
@@ -94,6 +103,7 @@ module axi_crossbar #(
     logic [N_MASTERS-1:0] r_grant [M_SLAVES];
     logic                 r_ack [M_SLAVES];
 
+    // Map decoder matches to arbiter requests per slave
     always_comb begin
         for (int j = 0; j < M_SLAVES; j++) begin
             for (int i = 0; i < N_MASTERS; i++) begin
@@ -106,6 +116,7 @@ module axi_crossbar #(
     typedef enum logic [1:0] {W_IDLE, W_ADDR_DATA, W_RESP} w_state_t;
     typedef enum logic [1:0] {R_IDLE, R_ADDR, R_DATA} r_state_t;
 
+    // Routing multiplexer signals
     logic [M_SLAVES-1:0] master_awready [N_MASTERS];
     logic [M_SLAVES-1:0] master_wready  [N_MASTERS];
     logic [M_SLAVES-1:0] master_bvalid  [N_MASTERS];
@@ -115,8 +126,10 @@ module axi_crossbar #(
     logic [31:0]         master_rdata   [N_MASTERS][M_SLAVES];
     logic [1:0]          master_rresp   [N_MASTERS][M_SLAVES];
 
+    // Generate isolated routing logic and state machines for each slave port
     generate
         for (genvar j = 0; j < M_SLAVES; j++) begin : gen_slave_logic
+            // Round-robin arbiters to ensure fair multi-master access under contention
             rr_arbiter #(.N_REQ(N_MASTERS)) u_w_arbiter (
                 .clk(aclk), .rst_n(aresetn), .req_i(w_req[j]), .ack_i(w_ack[j]), .grant_o(w_grant[j])
             );
@@ -140,6 +153,7 @@ module axi_crossbar #(
                 end
             end
 
+            // Write Channel State Machine (AW, W, B)
             always_comb begin
                 w_state_d = w_state_q; aw_done_d = aw_done_q; w_done_d = w_done_q; w_grant_d = w_grant_q; w_ack[j] = 1'b0;
                 case (w_state_q)
@@ -150,6 +164,7 @@ module axi_crossbar #(
                     W_ADDR_DATA: begin
                         if (m_core_if[j].awvalid && m_core_if[j].awready) aw_done_d = 1'b1;
                         if (m_core_if[j].wvalid  && m_core_if[j].wready)  w_done_d  = 1'b1;
+                        // Transition to response phase only when BOTH Address and Data handshakes complete
                         if ((aw_done_q || (m_core_if[j].awvalid && m_core_if[j].awready)) && 
                             (w_done_q  || (m_core_if[j].wvalid  && m_core_if[j].wready))) w_state_d = W_RESP;
                     end
@@ -158,6 +173,7 @@ module axi_crossbar #(
                 endcase
             end
 
+            // Read Channel State Machine (AR, R)
             always_comb begin
                 r_state_d = r_state_q; r_grant_d = r_grant_q; r_ack[j] = 1'b0;
                 case (r_state_q)
@@ -171,14 +187,18 @@ module axi_crossbar #(
             logic [N_MASTERS-1:0] active_w_grant;
             logic [N_MASTERS-1:0] active_r_grant;
             
+            // Hold the grant active during the entire transaction lifecycle
             assign active_w_grant = (w_state_q == W_IDLE) ? w_grant[j] : w_grant_q;
             assign active_r_grant = (r_state_q == R_IDLE) ? r_grant[j] : r_grant_q;
 
+            // Route physical signals based on the active master grant
             always_comb begin
                 for (int i=0; i<N_MASTERS; i++) begin
                     master_awready[i][j] = 0; master_wready[i][j] = 0; master_bvalid[i][j] = 0; master_bresp[i][j] = 0;
                     master_arready[i][j] = 0; master_rvalid[i][j] = 0; master_rdata[i][j] = 0; master_rresp[i][j] = 0;
                 end
+                
+                // Master 1 Write Routing
                 if (active_w_grant[1]) begin
                     m_core_if[j].awaddr = s_core_if[1].awaddr; m_core_if[j].awvalid = s_core_if[1].awvalid && (w_state_q == W_ADDR_DATA) && !aw_done_q;
                     m_core_if[j].wdata = s_core_if[1].wdata; m_core_if[j].wvalid = s_core_if[1].wvalid && (w_state_q == W_ADDR_DATA) && !w_done_q;
@@ -186,6 +206,7 @@ module axi_crossbar #(
                     master_awready[1][j] = m_core_if[j].awready && (w_state_q == W_ADDR_DATA) && !aw_done_q;
                     master_wready[1][j] = m_core_if[j].wready && (w_state_q == W_ADDR_DATA) && !w_done_q;
                     master_bvalid[1][j] = m_core_if[j].bvalid && (w_state_q == W_RESP); master_bresp[1][j] = m_core_if[j].bresp;
+                // Master 0 Write Routing
                 end else if (active_w_grant[0]) begin
                     m_core_if[j].awaddr = s_core_if[0].awaddr; m_core_if[j].awvalid = s_core_if[0].awvalid && (w_state_q == W_ADDR_DATA) && !aw_done_q;
                     m_core_if[j].wdata = s_core_if[0].wdata; m_core_if[j].wvalid = s_core_if[0].wvalid && (w_state_q == W_ADDR_DATA) && !w_done_q;
@@ -196,11 +217,14 @@ module axi_crossbar #(
                 end else begin
                     m_core_if[j].awaddr = 0; m_core_if[j].awvalid = 0; m_core_if[j].wdata = 0; m_core_if[j].wvalid = 0; m_core_if[j].bready = 0;
                 end
+                
+                // Master 1 Read Routing
                 if (active_r_grant[1]) begin
                     m_core_if[j].araddr = s_core_if[1].araddr; m_core_if[j].arvalid = s_core_if[1].arvalid && (r_state_q == R_ADDR);
                     m_core_if[j].rready = s_core_if[1].rready && (r_state_q == R_DATA);
                     master_arready[1][j] = m_core_if[j].arready && (r_state_q == R_ADDR);
                     master_rvalid[1][j] = m_core_if[j].rvalid && (r_state_q == R_DATA); master_rdata[1][j] = m_core_if[j].rdata; master_rresp[1][j] = m_core_if[j].rresp;
+                // Master 0 Read Routing
                 end else if (active_r_grant[0]) begin
                     m_core_if[j].araddr = s_core_if[0].araddr; m_core_if[j].arvalid = s_core_if[0].arvalid && (r_state_q == R_ADDR);
                     m_core_if[j].rready = s_core_if[0].rready && (r_state_q == R_DATA);
@@ -213,6 +237,7 @@ module axi_crossbar #(
         end
     endgenerate
 
+    // OR gate aggregation to send Slave responses back up to the respective Master
     generate
         for (genvar i = 0; i < N_MASTERS; i++) begin : gen_master_response
             always_comb begin
